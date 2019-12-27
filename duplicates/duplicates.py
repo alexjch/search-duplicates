@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
+""" Walks a tree for files and saves hashes """
 
 import os
-import imagehash
+import hashlib
 import sqlite3
 from argparse import ArgumentParser
-from PIL import Image
 
 
 CREATE_TABLE = """
@@ -15,8 +15,11 @@ INSERT_HASH = """
 INSERT INTO file_hash VALUES (?, ?)
 """
 
+BLOCKSIZE = 65536
 
-class DBConn(object):
+
+class DBConn():
+    """ Abstraction for db connection """
 
     def __init__(self, path):
         self.conn = sqlite3.connect(path)
@@ -25,66 +28,79 @@ class DBConn(object):
         self.commit = self.conn.commit
         try:
             self.execute(CREATE_TABLE)
-        except sqlite3.OperationalError as oe:
-            print("Table creation failed with error: {}".format(oe))
+        except sqlite3.OperationalError as oerr:
+            print("Table creation failed with error: {}".format(oerr))
 
     def __enter__(self):
         return self
 
-    def __exit__(self):
+    def __exit__(self, _type, value, traceback):
         self.cursor.close()
         self.conn.close()
 
 
-def output(db, hashed_file):
+def output(db_conn, hashed_file):
+    """ Handles output to db or stdout """
     _hash, path = hashed_file
-    if db is None:
+    if db_conn is None:
         print("hash: {} path: {}".format(_hash, path))
     else:
         try:
-            db.execute(INSERT_HASH, (str(_hash), str(path)))
-        except sqlite3.IntegrityError as ie:
+            db_conn.execute(INSERT_HASH, (str(_hash), str(path)))
+        except sqlite3.IntegrityError as _:
             print("hash: {} path: {} is a duplicate".format(_hash, path))
 
 
 def hash_file(filename):
-    return imagehash.average_hash(Image.open(filename))
+    """ generate hash from file """
+    hasher = hashlib.md5()
+    with open(filename, 'rb') as afile:
+        buf = afile.read(BLOCKSIZE)
+        while len(buf) > 0:
+            hasher.update(buf)
+            buf = afile.read(BLOCKSIZE)
+    return hasher.hexdigest()
 
 
 def parse_args():
-    ap = ArgumentParser(description='Hash images')
-    ap.add_argument('--path', help='Path to file or directory to calculate hash',
-                    default=os.getcwd())
-    ap.add_argument('--extension', help='Filename extension',
-                    default='jpg')
-    ap.add_argument('--output', help='sqlite file output',
-                    default=None)
-    return ap.parse_args()
+    """ CLI arguments """
+    args_p = ArgumentParser(description='Hash images')
+    args_p.add_argument('--path', help='Path to file or directory to calculate hash',
+                        default=os.getcwd())
+    args_p.add_argument('--extension', help='Filename extension',
+                        default='jpg')
+    args_p.add_argument('--output', help='sqlite file output',
+                        default=None)
+    return args_p.parse_args()
 
 
 def find_files(path, extension):
-    for root, dirs, files in os.walk(path):
+    """ Walks directory and checks for file with provided extension """
+    for root, _, files in os.walk(path):
         for filename in files:
+            if filename.startswith('.'):
+                continue
             if filename.lower().endswith(extension.lower()):
                 full_path = os.path.join(root, filename)
                 yield (hash_file(full_path), full_path,)
 
 
 def main():
-    db = None
+    """ Main function """
+    db_conn = None
     args = parse_args()
     # Path to search files
     if os.path.isdir(args.path):
         # Initialize database
         if args.output is not None:
-            db = DBConn(args.output)
+            db_conn = DBConn(args.output)
         for hashed_file in find_files(args.path, args.extension):
-            output(db, hashed_file)
-        if db is not None:
-            db.commit()
+            output(db_conn, hashed_file)
+        if db_conn is not None:
+            db_conn.commit()
     # Hash single file
     else:
-        hash_file(args.path)
+        print(hash_file(args.path))
 
 
 if __name__ == '__main__':
